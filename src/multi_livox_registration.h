@@ -58,6 +58,7 @@ private:
 
     // Odometry and IMU info.
     double linear_velocity_XYplane_;
+    double linear_velocity_Z_;
     double angular_velocity_rz_;
 
     void LivoxHandler(const sensor_msgs::PointCloud2ConstPtr &cloud_in) {
@@ -89,8 +90,8 @@ private:
 
             for (int i = 0; i < LIVOX_NUM; ++i) {
                 // Find livox id.
-//                float raw_intensity = arr_pointcloud_single_[i]->points[0].intensity;
-//                int livox_id = round((raw_intensity - float(int(raw_intensity))) * 1000);
+                float raw_intensity = arr_pointcloud_single_[i]->points[0].intensity;
+                int livox_id = round((raw_intensity - float(int(raw_intensity))) * 1000);
 //
 //                    TransfromToLivoxCoordinate(arr_pointcloud_single_[i],
 //                                               arr_livox_cali_info[livox_id].x,
@@ -101,12 +102,16 @@ private:
 //                                               arr_livox_cali_info[livox_id].rz);
 
                 // Motion compensation.
-                CompensateMotionInFrame(arr_pointcloud_single_[i],
-                                        linear_velocity_XYplane_,
-                                        angular_velocity_rz_);
+//                if(livox_id == 0 ||livox_id == 3 ||livox_id == 21 ||livox_id == 26 )
+                {
+                    CompensateMotionInFrame(arr_pointcloud_single_[i],
+                                            linear_velocity_XYplane_,
+                                            linear_velocity_Z_,
+                                            angular_velocity_rz_);
 
 
-                *pointcloud_all_ += *arr_pointcloud_single_[i];
+                    *pointcloud_all_ += *arr_pointcloud_single_[i];
+                }
 
             }
 
@@ -124,6 +129,7 @@ private:
                 // Transfrom to next frame.
                 CompensateMotionAmongFrame(pointcloud_to_publish_,
                                            linear_velocity_XYplane_,
+                                           linear_velocity_Z_,
                                            angular_velocity_rz_);
             } else {
                 frame_count = 0;
@@ -150,6 +156,7 @@ private:
     void OdomHandler(const nav_msgs::OdometryConstPtr &odom_in) {
         linear_velocity_XYplane_ = sqrt(odom_in->twist.twist.linear.x * odom_in->twist.twist.linear.x +
                                         odom_in->twist.twist.linear.y * odom_in->twist.twist.linear.y);
+        linear_velocity_Z_ = odom_in->twist.twist.linear.z;
     }
 
     void ImuHandler(const sensor_msgs::ImuConstPtr &imu_in) {
@@ -175,49 +182,73 @@ private:
 
     }
 
+    void TransfromToHubCoordinate(pcl::PointCloud<pcl::PointXYZI>::Ptr &cloud,
+                                    double tx, double ty, double tz,
+                                    double rx, double ry, double rz) {
+
+        for (int i = 0; i < cloud->points.size(); ++i) {
+            double tempX = cloud->points[i].x;
+            double tempY = cloud->points[i].y;
+
+            cloud->points[i].x = cos(rz) * tempX - sin(rz) * tempY + tx;
+            cloud->points[i].y = sin(rz) * tempX + cos(rz) * tempY + ty;
+            cloud->points[i].z += tz;
+
+        }
+
+    }
+
     void CompensateMotionInFrame(pcl::PointCloud<pcl::PointXYZI>::Ptr &cloud,
                                  double linear_velocity_xy,
+                                 double linear_velocity_z,
                                  double angular_velocity_rz) {
         double coefficient = 1 / double(LIVOX_FREQUENCY) / double(cloud->points.size());
         double angle_coefficient = angular_velocity_rz * coefficient;
-        double translation_coefficient = linear_velocity_xy * coefficient;
+        double translation_xy_coefficient = linear_velocity_xy * coefficient;
+        double translation_z_coefficient = linear_velocity_z * coefficient;
         double angle = 0.0;
-        double translation = 0.0;
+        double translation_xy = 0.0;
+        double translation_z = 0.0;
 
         for (int i = 0; i < cloud->points.size(); ++i) {
 
             angle += angle_coefficient;
-            translation += translation_coefficient;
+            translation_xy += translation_xy_coefficient;
+            translation_z += translation_z_coefficient;
 
             double cos_theta = cos(angle);
             double sin_theta = sin(angle);
 
-            double tempX = cos_theta * cloud->points[i].x - sin_theta * cloud->points[i].y + translation * cos_theta;
-            double tempY = sin_theta * cloud->points[i].x + cos_theta * cloud->points[i].y + translation * sin_theta;
+            double tempX = cos_theta * cloud->points[i].x - sin_theta * cloud->points[i].y + translation_xy * cos_theta;
+            double tempY = sin_theta * cloud->points[i].x + cos_theta * cloud->points[i].y + translation_xy * sin_theta;
 
             cloud->points[i].x = tempX;
             cloud->points[i].y = tempY;
+            cloud->points[i].z += translation_z;
         }
 
     }
 
     void CompensateMotionAmongFrame(pcl::PointCloud<pcl::PointXYZI>::Ptr &cloud,
                                     double linear_velocity_xy,
+                                    double linear_velocity_z,
                                     double angular_velocity_rz) {
 
         double angle = angular_velocity_rz / double(LIVOX_FREQUENCY);
-        double translation = linear_velocity_xy / double(LIVOX_FREQUENCY);
+        double translation_xy = linear_velocity_xy / double(LIVOX_FREQUENCY);
+        double translation_z = linear_velocity_z / double(LIVOX_FREQUENCY);
 
         double cos_theta = cos(angle);
         double sin_theta = sin(angle);
 
         for (int i = 0; i < cloud->points.size(); ++i) {
 
-            double tempX = cos_theta * cloud->points[i].x + sin_theta * cloud->points[i].y - translation;
+            double tempX = cos_theta * cloud->points[i].x + sin_theta * cloud->points[i].y - translation_xy;
             double tempY = -sin_theta * cloud->points[i].x + cos_theta * cloud->points[i].y;
 
             cloud->points[i].x = tempX;
             cloud->points[i].y = tempY;
+            cloud->points[i].z -= translation_z; // - or + ？
         }
 
     }
@@ -240,17 +271,29 @@ public:
         frame_count = 0;
 
         linear_velocity_XYplane_ = 0;
+        linear_velocity_Z_ = 0;
         angular_velocity_rz_ = 0;
 
         // Calibration init.
-        arr_livox_cali_info[0] = {-0.16, -0.16, 0.737 - 0.0737, 0, 0, -0.75 * M_PI};
-        arr_livox_cali_info[3] = {0.18, -0.18, 0.397 - 0.0397, 0, 0, -0.2417 * M_PI + 0.167 * M_PI};
-        arr_livox_cali_info[4] = {0.18, -0.18, 0.397 - 0.0397, 0, 0, -0.2417 * M_PI};
-        arr_livox_cali_info[5] = {0.18, -0.18, 0.397 - 0.0397, 0, 0, -0.2417 * M_PI - 0.167 * M_PI};
-        arr_livox_cali_info[21] = {-0.16, 0.16, 0.737 - 0.0737, 0, 0, 0.75 * M_PI};
-        arr_livox_cali_info[24] = {0.18, 0.18, 0.397 - 0.0397, 0, 0, 0.25 * M_PI + 0.167 * M_PI};
-        arr_livox_cali_info[25] = {0.18, 0.18, 0.397 - 0.0397, 0, 0, 0.25 * M_PI};
-        arr_livox_cali_info[26] = {0.18, 0.18, 0.397 - 0.0397, 0, 0, 0.25 * M_PI - 0.167 * M_PI};
+        // config 1
+//        arr_livox_cali_info[0] = {-0.16, -0.16, 0.737 - 0.0737, 0, 0, -0.75 * M_PI};
+//        arr_livox_cali_info[3] = {0.18, -0.18, 0.397 - 0.0397, 0, 0, -0.2417 * M_PI + 0.167 * M_PI};
+//        arr_livox_cali_info[4] = {0.18, -0.18, 0.397 - 0.0397, 0, 0, -0.2417 * M_PI};
+//        arr_livox_cali_info[5] = {0.18, -0.18, 0.397 - 0.0397, 0, 0, -0.2417 * M_PI - 0.167 * M_PI};
+//        arr_livox_cali_info[21] = {-0.16, 0.16, 0.737 - 0.0737, 0, 0, 0.75 * M_PI};
+//        arr_livox_cali_info[24] = {0.18, 0.18, 0.397 - 0.0397, 0, 0, 0.25 * M_PI + 0.167 * M_PI};
+//        arr_livox_cali_info[25] = {0.18, 0.18, 0.397 - 0.0397, 0, 0, 0.25 * M_PI};
+//        arr_livox_cali_info[26] = {0.18, 0.18, 0.397 - 0.0397, 0, 0, 0.25 * M_PI - 0.167 * M_PI};
+
+        // config 2
+        arr_livox_cali_info[0] = {-0.16, -0.16, 0.0737, 0, 0, -0.75 * M_PI};
+        arr_livox_cali_info[3] = {0.18, -0.18, 0.0397, 0, 0, -0.2417 * M_PI + 0.167 * M_PI};
+        arr_livox_cali_info[4] = {0.18, -0.18, 0.0397, 0, 0, -0.2417 * M_PI};
+        arr_livox_cali_info[5] = {0.18, -0.18, 0.0397, 0, 0, -0.2417 * M_PI - 0.167 * M_PI};
+        arr_livox_cali_info[21] = {-0.16, 0.16, 0.0737, 0, 0, 0.75 * M_PI};
+        arr_livox_cali_info[24] = {0.18, 0.18, 0.0397, 0, 0, 0.25 * M_PI + 0.167 * M_PI};
+        arr_livox_cali_info[25] = {0.18, 0.18, 0.0397, 0, 0, 0.25 * M_PI};
+        arr_livox_cali_info[26] = {0.18, 0.18, 0.0397, 0, 0, 0.25 * M_PI - 0.167 * M_PI};
 
         livox_subscriber_ = nh_.subscribe<sensor_msgs::PointCloud2>("/livox/hub",
                                                                     1000,
