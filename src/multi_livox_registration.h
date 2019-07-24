@@ -17,8 +17,8 @@
 
 #include <ctime>
 
-#define MAX_FRAME_GAP 0.01
-#define LIVOX_NUM 8
+#define MAX_FRAME_GAP 0.02
+#define LIVOX_NUM 12
 #define LIVOX_NUM_MAX 32
 #define LIVOX_FREQUENCY 20
 #define FRAME_INTERVAL 2
@@ -77,7 +77,7 @@ private:
         *arr_pointcloud_single_[livox_count] = *pointcloud_single_;
         livox_count++;
 
-        if (livox_count == 8) {
+        if (livox_count == LIVOX_NUM) {
 
             pointcloud_all_->clear();
 
@@ -136,8 +136,6 @@ private:
 
                 *pointcloud_to_publish_ += *pointcloud_all_;
 
-                ROS_INFO_STREAM(pointcloud_to_publish_->points.size());
-
                 // Publish point cloud.
                 sensor_msgs::PointCloud2 cloud_out;
                 pcl::toROSMsg(*pointcloud_to_publish_, cloud_out);
@@ -145,9 +143,10 @@ private:
                 cloud_out.header.frame_id = "/livox_frame";
                 pointcloud_publisher_.publish(cloud_out);
 
+                ROS_INFO_STREAM("Published " <<pointcloud_to_publish_->points.size() <<" points in " << double(clock() - startTime) / CLOCKS_PER_SEC << " s.");
+
                 pointcloud_to_publish_->clear();
 
-                ROS_INFO_STREAM("Publishing running time: " << double(clock() - startTime) / CLOCKS_PER_SEC << " s.");
             }
 
         }

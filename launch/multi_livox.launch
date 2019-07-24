@@ -1,0 +1,7 @@
+<launch>
+
+    <node name="MultiLivoxRegistration" pkg="multi_livox_registration"
+	      type="multi_livox_registration_node" required="true"
+	      output="screen"/>
+
+</launch>
